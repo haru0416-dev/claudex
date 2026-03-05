@@ -11,7 +11,7 @@ import {
   applyDefaultEffort,
   approxTokenCount,
   hasEffortFlag,
-  parseChatgptTokenFromAuthJson,
+  parseChatgptTokenCandidatesFromAuthJson,
   parseClaudexArgs,
   parseApiKeyFromAuthJson,
   parseCodexConfig,
@@ -47,6 +47,7 @@ const claudeSubcommands = new Set([
 interface RuntimeConfig {
   upstreamBaseUrl: string;
   upstreamBearerToken: string;
+  upstreamFallbackTokens: string[];
   upstreamExtraHeaders: Record<string, string>;
   forcedModel: string;
   authMode: "provider-api-key" | "chatgpt-token" | "chatgpt-api-key";
@@ -153,6 +154,7 @@ function loadRuntimeConfig(): RuntimeConfig {
     return {
       upstreamBaseUrl: resolvedProvider.baseUrl,
       upstreamBearerToken,
+      upstreamFallbackTokens: [],
       upstreamExtraHeaders: {},
       forcedModel,
       authMode: "provider-api-key",
@@ -160,10 +162,14 @@ function loadRuntimeConfig(): RuntimeConfig {
   }
 
   try {
-    const tokenAuth = parseChatgptTokenFromAuthJson(authContents, {
+    const tokenCandidates = parseChatgptTokenCandidatesFromAuthJson(authContents, {
       envBearerToken,
       envAccountId: envChatgptAccountId,
     });
+    if (tokenCandidates.length === 0) {
+      throw new Error("no token candidates found");
+    }
+    const [tokenAuth, ...fallbackTokens] = tokenCandidates;
 
     const extraHeaders: Record<string, string> = {};
     if (tokenAuth.accountId) {
@@ -173,6 +179,7 @@ function loadRuntimeConfig(): RuntimeConfig {
     return {
       upstreamBaseUrl: chatgptBaseUrl,
       upstreamBearerToken: tokenAuth.bearerToken,
+      upstreamFallbackTokens: fallbackTokens.map((candidate) => candidate.bearerToken),
       upstreamExtraHeaders: extraHeaders,
       forcedModel,
       authMode: "chatgpt-token",
@@ -182,6 +189,7 @@ function loadRuntimeConfig(): RuntimeConfig {
     return {
       upstreamBaseUrl: chatgptBaseUrl,
       upstreamBearerToken,
+      upstreamFallbackTokens: [],
       upstreamExtraHeaders: {},
       forcedModel,
       authMode: "chatgpt-api-key",
@@ -301,12 +309,11 @@ async function proxyRaw(
   requestPath: string,
   upstreamOrigin: URL,
   upstreamBearerToken: string,
+  upstreamFallbackTokens: string[],
   upstreamExtraHeaders: Record<string, string>,
   overrideBody: JsonObject | null = null
 ): Promise<void> {
-  const headers: Record<string, string> = {
-    authorization: `Bearer ${upstreamBearerToken}`,
-  };
+  const baseHeaders: Record<string, string> = {};
 
   for (const [key, value] of Object.entries(req.headers)) {
     if (value === undefined) {
@@ -316,28 +323,77 @@ async function proxyRaw(
     if (normalized === "host" || normalized === "content-length" || normalized === "authorization") {
       continue;
     }
-    headers[normalized] = Array.isArray(value) ? value.join(", ") : value;
+    baseHeaders[normalized] = Array.isArray(value) ? value.join(", ") : value;
   }
   for (const [key, value] of Object.entries(upstreamExtraHeaders)) {
-    headers[key.toLowerCase()] = value;
+    baseHeaders[key.toLowerCase()] = value;
   }
 
   let outboundBody = bodyBuffer;
   if (overrideBody !== null) {
     const payload = JSON.stringify(overrideBody);
     outboundBody = Buffer.from(payload);
-    headers["content-type"] = "application/json";
-    headers["content-length"] = String(outboundBody.length);
+    baseHeaders["content-type"] = "application/json";
+    baseHeaders["content-length"] = String(outboundBody.length);
   } else if (outboundBody.length > 0) {
-    headers["content-length"] = String(outboundBody.length);
+    baseHeaders["content-length"] = String(outboundBody.length);
   }
 
   const upstreamUrl = buildUpstreamUrl(upstreamOrigin, requestPath);
-  const upstreamResponse = await fetch(upstreamUrl, {
-    method: req.method,
-    headers,
-    body: req.method === "GET" || req.method === "HEAD" ? undefined : outboundBody,
-  });
+  const tokenCandidates = [upstreamBearerToken, ...upstreamFallbackTokens]
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+  const uniqueTokenCandidates = Array.from(new Set(tokenCandidates));
+
+  const shouldRetryOnExpiredToken = async (response: Response): Promise<boolean> => {
+    if (response.status !== 401) {
+      return false;
+    }
+    const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+    if (!contentType.includes("application/json")) {
+      return false;
+    }
+    try {
+      const parsed = (await response.clone().json()) as {
+        error?: { code?: string; message?: string };
+      };
+      const code = String(parsed?.error?.code || "").toLowerCase();
+      const message = String(parsed?.error?.message || "").toLowerCase();
+      return code === "token_expired" || message.includes("token expired");
+    } catch {
+      return false;
+    }
+  };
+
+  let upstreamResponse: Response | null = null;
+  for (let attempt = 0; attempt < uniqueTokenCandidates.length; attempt += 1) {
+    const token = uniqueTokenCandidates[attempt];
+    const headers: Record<string, string> = {
+      ...baseHeaders,
+      authorization: `Bearer ${token}`,
+    };
+    const response = await fetch(upstreamUrl, {
+      method: req.method,
+      headers,
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : outboundBody,
+    });
+
+    const hasMoreCandidates = attempt < uniqueTokenCandidates.length - 1;
+    const shouldRetry = hasMoreCandidates && (await shouldRetryOnExpiredToken(response));
+    if (shouldRetry) {
+      if (debug) {
+        console.error(`claudex-proxy auth retry: token ${attempt + 1} expired, trying next candidate`);
+      }
+      continue;
+    }
+
+    upstreamResponse = response;
+    break;
+  }
+
+  if (!upstreamResponse) {
+    throw new Error("claudex-proxy failed to obtain upstream response");
+  }
 
   res.writeHead(upstreamResponse.status, copyHeadersFromUpstream(upstreamResponse.headers));
   if (!upstreamResponse.body) {
@@ -353,6 +409,7 @@ async function startProxy(
   listenPort: number,
   upstreamOrigin: URL,
   upstreamBearerToken: string,
+  upstreamFallbackTokens: string[],
   upstreamExtraHeaders: Record<string, string>,
   options: ProxyOptions
 ): Promise<http.Server> {
@@ -448,6 +505,7 @@ async function startProxy(
           url.pathname + url.search,
           upstreamOrigin,
           upstreamBearerToken,
+          upstreamFallbackTokens,
           upstreamExtraHeaders,
           parsed
         );
@@ -462,6 +520,7 @@ async function startProxy(
         url.pathname + url.search,
         upstreamOrigin,
         upstreamBearerToken,
+        upstreamFallbackTokens,
         upstreamExtraHeaders
       );
     } catch (error) {
@@ -500,6 +559,7 @@ async function main(): Promise<void> {
     listenPort,
     upstreamOrigin,
     runtime.upstreamBearerToken,
+    runtime.upstreamFallbackTokens,
     runtime.upstreamExtraHeaders,
     {
       forcedModel: runtime.forcedModel,
@@ -511,7 +571,7 @@ async function main(): Promise<void> {
 
   const proxyUrl = `http://${listenHost}:${listenPort}`;
   console.error(
-    `claudex: proxy=${proxyUrl} force_model=${runtime.forcedModel} safe_mode=${safeMode} auth_mode=${runtime.authMode}`
+    `claudex: proxy=${proxyUrl} force_model=${runtime.forcedModel} safe_mode=${safeMode} auth_mode=${runtime.authMode} fallback_tokens=${runtime.upstreamFallbackTokens.length}`
   );
 
   const injectedArgs = [...args];

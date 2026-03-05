@@ -168,14 +168,58 @@ export interface ParsedChatgptTokenFromAuth {
   source: "env" | "tokens.id_token" | "tokens.access_token" | "id_token" | "access_token";
 }
 
-export function parseChatgptTokenFromAuthJson(
+export interface ParsedChatgptTokenCandidate extends ParsedChatgptTokenFromAuth {
+  expiresAt?: number;
+  expired?: boolean;
+}
+
+function parseJwtExp(token: string): number | undefined {
+  const parts = token.split(".");
+  if (parts.length < 2) {
+    return undefined;
+  }
+
+  const payload = parts[1];
+  const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+  const base64 = padded.replace(/-/g, "+").replace(/_/g, "/");
+
+  try {
+    const decoded = JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
+    if (typeof decoded?.exp === "number" && Number.isFinite(decoded.exp)) {
+      return decoded.exp;
+    }
+  } catch {
+    // Ignore malformed JWT payloads and treat as token without explicit expiry.
+  }
+
+  return undefined;
+}
+
+function toChatgptTokenCandidate(
+  token: string,
+  source: ParsedChatgptTokenFromAuth["source"],
+  accountId?: string
+): ParsedChatgptTokenCandidate {
+  const expiresAt = parseJwtExp(token);
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    bearerToken: token,
+    accountId,
+    source,
+    expiresAt,
+    expired: expiresAt !== undefined ? now >= expiresAt : undefined,
+  };
+}
+
+export function parseChatgptTokenCandidatesFromAuthJson(
   contents: string,
   options: {
     envBearerToken?: string;
     envAccountId?: string;
   } = {}
-): ParsedChatgptTokenFromAuth {
+): ParsedChatgptTokenCandidate[] {
   if (options.envBearerToken?.trim()) {
+    const envToken = options.envBearerToken.trim();
     let parsed: any = {};
     if (contents.trim().length > 0) {
       parsed = parseAuthJson(contents);
@@ -187,11 +231,7 @@ export function parseChatgptTokenFromAuthJson(
       parsed?.chatgpt_account_id,
       parsed?.chatgptAccountId,
     ]);
-    return {
-      bearerToken: options.envBearerToken.trim(),
-      accountId,
-      source: "env",
-    };
+    return [toChatgptTokenCandidate(envToken, "env", accountId)];
   }
 
   const parsed = parseAuthJson(contents);
@@ -213,14 +253,42 @@ export function parseChatgptTokenFromAuthJson(
     { value: parsed?.access_token, source: "access_token" },
   ];
 
+  const seen = new Set<string>();
+  const candidates: ParsedChatgptTokenCandidate[] = [];
+
   for (const candidate of orderedCandidates) {
-    if (typeof candidate.value === "string" && candidate.value.trim().length > 0) {
-      return {
-        bearerToken: candidate.value.trim(),
-        accountId,
-        source: candidate.source,
-      };
+    if (typeof candidate.value !== "string" || candidate.value.trim().length === 0) {
+      continue;
     }
+
+    const token = candidate.value.trim();
+    if (seen.has(token)) {
+      continue;
+    }
+    seen.add(token);
+    candidates.push(toChatgptTokenCandidate(token, candidate.source, accountId));
+  }
+
+  const nonExpired = candidates.filter((candidate) => candidate.expired !== true);
+  const expired = candidates.filter((candidate) => candidate.expired === true);
+  return [...nonExpired, ...expired];
+}
+
+export function parseChatgptTokenFromAuthJson(
+  contents: string,
+  options: {
+    envBearerToken?: string;
+    envAccountId?: string;
+  } = {}
+): ParsedChatgptTokenFromAuth {
+  const candidates = parseChatgptTokenCandidatesFromAuthJson(contents, options);
+  if (candidates.length > 0) {
+    const [primary] = candidates;
+    return {
+      bearerToken: primary.bearerToken,
+      accountId: primary.accountId,
+      source: primary.source,
+    };
   }
 
   throw new Error(

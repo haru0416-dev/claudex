@@ -3,6 +3,7 @@ import {
   applyDefaultEffort,
   approxTokenCount,
   hasEffortFlag,
+  parseChatgptTokenCandidatesFromAuthJson,
   parseChatgptTokenFromAuthJson,
   parseClaudexArgs,
   parseApiKeyFromAuthJson,
@@ -10,6 +11,12 @@ import {
   resolveUpstreamFromCodexConfig,
   sanitizeToolFields,
 } from "../src/core.ts";
+
+function buildJwtWithExp(exp: number): string {
+  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ exp })).toString("base64url");
+  return `${header}.${payload}.sig`;
+}
 
 describe("hasEffortFlag", () => {
   test("detects --effort and --effort=", () => {
@@ -109,6 +116,18 @@ describe("parseChatgptTokenFromAuthJson", () => {
     expect(parsed.source).toBe("tokens.id_token");
   });
 
+  test("prefers non-expired token when id_token is expired", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const authJson = JSON.stringify({
+      tokens: {
+        id_token: buildJwtWithExp(now - 60),
+        access_token: buildJwtWithExp(now + 3600),
+      },
+    });
+    const parsed = parseChatgptTokenFromAuthJson(authJson);
+    expect(parsed.source).toBe("tokens.access_token");
+  });
+
   test("falls back to tokens.access_token", () => {
     const authJson = JSON.stringify({
       tokens: {
@@ -138,6 +157,40 @@ describe("parseChatgptTokenFromAuthJson", () => {
   test("throws without token fields", () => {
     const authJson = JSON.stringify({ OPENAI_API_KEY: "sk-test" });
     expect(() => parseChatgptTokenFromAuthJson(authJson)).toThrow("failed to read ChatGPT token");
+  });
+});
+
+describe("parseChatgptTokenCandidatesFromAuthJson", () => {
+  test("keeps expired tokens as fallback candidates", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const authJson = JSON.stringify({
+      tokens: {
+        id_token: buildJwtWithExp(now - 60),
+        access_token: buildJwtWithExp(now + 3600),
+      },
+    });
+
+    const candidates = parseChatgptTokenCandidatesFromAuthJson(authJson);
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0].source).toBe("tokens.access_token");
+    expect(candidates[1].source).toBe("tokens.id_token");
+    expect(candidates[1].expired).toBe(true);
+  });
+
+  test("env token remains the sole candidate", () => {
+    const authJson = JSON.stringify({
+      tokens: {
+        id_token: "id-token-value",
+        access_token: "access-token-value",
+      },
+    });
+
+    const candidates = parseChatgptTokenCandidatesFromAuthJson(authJson, {
+      envBearerToken: "env-token-value",
+    });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].source).toBe("env");
+    expect(candidates[0].bearerToken).toBe("env-token-value");
   });
 });
 

@@ -52,7 +52,8 @@ Authentication note:
 
 - Priority is:
   1. Use `model_provider` / `CLAUDEX_UPSTREAM_BASE_URL` when resolvable, authenticated via API key.
-  2. If no provider is resolvable, fall back to official ChatGPT endpoint (`https://chatgpt.com/backend-api/codex`) and use `tokens.id_token` (then `tokens.access_token`) from `~/.codex/auth.json`.
+  2. If no provider is resolvable, fall back to official ChatGPT endpoint (`https://chatgpt.com/backend-api/codex`) and use token candidates from `~/.codex/auth.json` (`tokens.id_token`, `tokens.access_token`, then top-level `id_token`/`access_token`).
+- In token mode, non-expired candidates are preferred over expired ones. If upstream returns `401` with `token_expired`, `claudex` retries once with the next candidate token.
 - In token mode, if `tokens.account_id` exists, `claudex` sends it as `ChatGPT-Account-Id`.
 - `claudex` sets `ANTHROPIC_API_KEY` to the upstream bearer credential and, unless you pass `--settings` yourself, injects `--settings {"forceLoginMethod":"console"}` to avoid Claude.ai-subscription-first login flows.
 
