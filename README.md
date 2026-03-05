@@ -2,6 +2,8 @@
 
 `claudex` is a Bun-based launcher that runs Claude Code against an OpenAI-compatible endpoint.
 
+You can get binary from [Releases](https://github.com/EdamAme-x/claudex/releases)
+
 ## Local usage
 
 0. Install dependencies:
@@ -35,7 +37,7 @@ Optional environment variables:
 
 ## Automated release
 
-GitHub Actions runs once per day:
+GitHub Actions runs on every push to `main` and once per day:
 
 1. Fetches the latest `install.sh` from `https://claude.ai/install.sh`.
 2. Extracts `GCS_BUCKET` from that script and reads the latest Claude Code version.
