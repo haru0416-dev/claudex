@@ -49,6 +49,31 @@ function ensureExecutable(path: string): boolean {
   }
 }
 
+function safeRealpath(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+
+function resolveSelfDir(): string {
+  const arg1 = process.argv[1];
+  if (typeof arg1 === "string" && arg1.length > 0 && !arg1.startsWith("-")) {
+    const resolvedArg1 = safeRealpath(arg1);
+    if (resolvedArg1) {
+      return dirname(resolvedArg1);
+    }
+  }
+
+  const resolvedExecPath = safeRealpath(process.execPath);
+  if (resolvedExecPath) {
+    return dirname(resolvedExecPath);
+  }
+
+  return process.cwd();
+}
+
 function resolveCodexPaths(): { configPath: string; authPath: string } {
   const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex");
   const configPath = process.env.CLAUDEX_CODEX_CONFIG?.trim() || join(codexHome, "config.toml");
@@ -99,9 +124,7 @@ function resolveClaudeBinary(): string {
     return process.env.CLAUDEX_CLAUDE_BIN;
   }
 
-  const entryPath = process.argv[1] ?? process.execPath;
-  const scriptPath = realpathSync(entryPath);
-  const scriptDir = dirname(scriptPath);
+  const scriptDir = resolveSelfDir();
   const reverseDir = join(scriptDir, "reverse");
 
   if (existsSync(reverseDir)) {
