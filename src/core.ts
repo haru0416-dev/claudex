@@ -7,6 +7,7 @@ export {
   type ParsedChatgptRefreshConfigFromAuth,
   type ParsedChatgptTokenFromAuth,
 } from "./auth-json.ts";
+export { resolveForcedModel, trimOrNull, type ForcedModelSource } from "./runtime-config.ts";
 export {
   approxTokenCount,
   applyDefaultEffort,

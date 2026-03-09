@@ -174,7 +174,9 @@ function buildWorkspaceSummary(rootDir: string): string | undefined {
 }
 
 async function main(): Promise<void> {
-  const runtime = loadRuntimeConfig();
+  const runtime = loadRuntimeConfig({
+    forcedModelOverride: parsedArgs.modelOverride,
+  });
   const upstreamOrigin = new URL(runtime.upstreamBaseUrl);
   const claudeBinary = resolveClaudeBinary();
 

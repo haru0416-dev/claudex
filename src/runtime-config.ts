@@ -22,11 +22,36 @@ export interface RuntimeConfig {
   };
 }
 
+export type ForcedModelSource = "cli" | "env" | "config" | "default";
+
 export function trimOrNull(value: unknown): string | null {
   if (typeof value === "string" && value.trim().length > 0) {
     return value.trim();
   }
   return null;
+}
+
+export function resolveForcedModel(options: {
+  cliOverride?: string | null;
+  envOverride?: string | null;
+  configModel?: string | null;
+  defaultForcedModel?: string | null;
+}): { forcedModel: string; source: ForcedModelSource } {
+  const defaultForcedModel = trimOrNull(options.defaultForcedModel) || "gpt-5.3-codex";
+  const candidates: Array<[ForcedModelSource, string | null | undefined]> = [
+    ["cli", options.cliOverride],
+    ["env", options.envOverride],
+    ["config", options.configModel],
+  ];
+
+  for (const [source, candidate] of candidates) {
+    const trimmed = trimOrNull(candidate);
+    if (trimmed) {
+      return { forcedModel: trimmed, source };
+    }
+  }
+
+  return { forcedModel: defaultForcedModel, source: "default" };
 }
 
 function resolveCodexPaths(): { configPath: string; authPath: string } {
@@ -36,7 +61,7 @@ function resolveCodexPaths(): { configPath: string; authPath: string } {
   return { configPath, authPath };
 }
 
-export function loadRuntimeConfig(): RuntimeConfig {
+export function loadRuntimeConfig(options: { forcedModelOverride?: string } = {}): RuntimeConfig {
   const { configPath, authPath } = resolveCodexPaths();
 
   const providerOverride = trimOrNull(process.env.CLAUDEX_MODEL_PROVIDER) || undefined;
@@ -75,17 +100,13 @@ export function loadRuntimeConfig(): RuntimeConfig {
     };
   }
 
-  const forceModelFromEnv = trimOrNull(process.env.CLAUDEX_FORCE_MODEL) || undefined;
-  const forceModelFromConfig = trimOrNull(modelFromConfig) || undefined;
-  let forcedModelSource: "env" | "config" | "default" = "default";
-  if (forceModelFromEnv) {
-    forcedModelSource = "env";
-  } else if (forceModelFromConfig) {
-    forcedModelSource = "config";
-  }
-
   const defaultForcedModel = "gpt-5.3-codex";
-  const forcedModel = (forceModelFromEnv || forceModelFromConfig || defaultForcedModel).trim();
+  const { forcedModel, source: forcedModelSource } = resolveForcedModel({
+    cliOverride: options.forcedModelOverride,
+    envOverride: process.env.CLAUDEX_FORCE_MODEL,
+    configModel: modelFromConfig,
+    defaultForcedModel,
+  });
 
   const authFileExists = existsSync(authPath);
   const authContents = authFileExists ? readFileSync(authPath, "utf8") : "";

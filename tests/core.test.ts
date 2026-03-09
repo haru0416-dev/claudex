@@ -12,6 +12,7 @@ import {
   parseClaudexArgs,
   parseApiKeyFromAuthJson,
   parseCodexConfig,
+  resolveForcedModel,
   resolveUpstreamFromCodexConfig,
   sanitizeToolFields,
   toResponsesInput,
@@ -30,6 +31,7 @@ describe("parseClaudexArgs", () => {
     const parsed = parseClaudexArgs(["-p", "hello"]);
     expect(parsed.safeMode).toBe(true);
     expect(parsed.hasSettingsArg).toBe(false);
+    expect(parsed.modelOverride).toBeUndefined();
     expect(parsed.claudeArgs).toEqual(["-p", "hello"]);
   });
 
@@ -43,6 +45,49 @@ describe("parseClaudexArgs", () => {
   test("detects --settings argument", () => {
     expect(parseClaudexArgs(["--settings", "{\"a\":1}"]).hasSettingsArg).toBe(true);
     expect(parseClaudexArgs(["--settings={\"a\":1}"]).hasSettingsArg).toBe(true);
+  });
+
+  test("consumes --model as claudex upstream override", () => {
+    const parsed = parseClaudexArgs(["--model", "gpt-5.5-chat", "-p", "hello"]);
+    expect(parsed.modelOverride).toBe("gpt-5.5-chat");
+    expect(parsed.claudeArgs).toEqual(["-p", "hello"]);
+  });
+
+  test("supports --model= and --upstream-model=", () => {
+    expect(parseClaudexArgs(["--model=gpt-5.4"]).modelOverride).toBe("gpt-5.4");
+    expect(parseClaudexArgs(["--upstream-model=gpt-5-codex"]).modelOverride).toBe("gpt-5-codex");
+  });
+});
+
+describe("resolveForcedModel", () => {
+  test("prefers cli override over env and config", () => {
+    expect(
+      resolveForcedModel({
+        cliOverride: "gpt-5.5-chat",
+        envOverride: "gpt-5.4",
+        configModel: "gpt-5.3-codex",
+      })
+    ).toEqual({
+      forcedModel: "gpt-5.5-chat",
+      source: "cli",
+    });
+  });
+
+  test("falls back to config then default", () => {
+    expect(
+      resolveForcedModel({
+        configModel: "gpt-5.4-mini",
+        defaultForcedModel: "gpt-5.3-codex",
+      })
+    ).toEqual({
+      forcedModel: "gpt-5.4-mini",
+      source: "config",
+    });
+
+    expect(resolveForcedModel({ defaultForcedModel: "gpt-5.3-codex" })).toEqual({
+      forcedModel: "gpt-5.3-codex",
+      source: "default",
+    });
   });
 });
 

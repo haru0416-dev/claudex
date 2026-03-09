@@ -27,12 +27,19 @@ bun install
 
 Wrapper flags:
 
+- `--model <id>` / `--upstream-model <id>`: override the upstream OpenAI model for this run only. `claudex` consumes this flag itself and does not forward it to the Claude binary.
 - `--no-safe`: disables `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` for that run.
 - By default, `claudex` enables safe mode (`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
 
+Example:
+
+```bash
+./claudex --model gpt-5.5-chat
+```
+
 Optional environment variables:
 
-- `CLAUDEX_FORCE_MODEL` (default: value of `model` from `~/.codex/config.toml`; fallback: `gpt-5.3-codex`)
+- `CLAUDEX_FORCE_MODEL` (used when no CLI `--model` / `--upstream-model` is given; otherwise CLI wins. Default: value of `model` from `~/.codex/config.toml`; fallback: `gpt-5.3-codex`)
 - `CLAUDEX_DEFAULT_REASONING_EFFORT` (default: `xhigh`)
 - `CLAUDEX_CLAUDE_BIN`
 - `CLAUDEX_CODEX_CONFIG` (overrides `~/.codex/config.toml`)
@@ -65,6 +72,7 @@ Authentication note:
 
 - Typecheck: `bun run typecheck`
 - Tests: `bun test`
+- `bun test` includes an integration test that round-trips Anthropic `tool_use` / `tool_result` through a Responses upstream mock (`tests/proxy.integration.test.ts`).
 - Combined check: `bun run check`
 - Enable local git hook: `bun run setup:hooks`
 

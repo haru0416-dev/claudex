@@ -27,6 +27,14 @@ DOWNLOAD_DIR="$HOME/.claude/downloads"
 #   - convert Anthropic `messages/system/tools/tool_choice` into Responses `input/tools/tool_choice`
 #   - convert streamed Responses `function_call` output back into Anthropic `tool_use`
 #   - strip unsupported Anthropic-only tool fields such as `defer_loading`
+# - 2026-03-09: `claudex --model <id>` was previously ignored for upstream selection because the
+#   wrapper always preferred `CLAUDEX_FORCE_MODEL` / `~/.codex/config.toml`. Current behavior:
+#   - CLI precedence is now `--model` / `--upstream-model` > `CLAUDEX_FORCE_MODEL` > config `model` > default
+#   - wrapper consumes `--model` itself and sets Anthropic env defaults (`ANTHROPIC_MODEL`, subagent model, etc.)
+#     to the chosen upstream model so Claude-side display/selection stays aligned
+# - 2026-03-09: live smoke test against a local Responses mock confirmed actual tool execution:
+#   upstream emitted `function_call name=\"Read\"`, Claude executed the real `Read` tool, and the
+#   follow-up request contained `function_call_output` with README contents.
 
 # Check for required dependencies
 DOWNLOADER=""
